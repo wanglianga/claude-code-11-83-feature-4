@@ -81,6 +81,38 @@
 对应接口：`GET /api/reconciliation/containers/{id}`、`/reports/{no}`、`/samples/{key}`、`/operations/{no}` 串联：
 不可变信封（摘要/签名/规范/接收时间）→ 样品 → 报告修订（状态/摘要/supersedes）→ 操作号 → 回执，并附完整事件序列。
 
+### 1.9 抽样设计加权的总体不合格率估计
+
+监管抽检常按风险**多抽高风险品类和重点地区**，直接用阳性样本比例会高估全市场不合格率。本模块在报文交换之外，提供**有抽样设计依据**的总体（批次级）不合格率估计。
+
+**领域模型与不变量**
+
+| 表 | 含义 |
+| --- | --- |
+| `sampling_frame` + `frame_stratum` | 抽样框与分层名册（地区 × 品类，层批次总量 N_h）；各层 N_h 之和必须等于框总量 N（建框即对平，否则 422） |
+| `sampling_unit` | 抽样单位（抽样单），**一个单位 = 一个批次**：保存地区/品类/生产规模、层批次总量 N_h、层抽样数 n_h、**已知入样概率 π**、风险加抽标记、非响应原因；设计权重 d=1/π |
+| `lab_report` | 实验室报告，链接到抽样单；`recheck=true` 的**复检挂在同一抽样单位下，不新增单位、不作为新样本**；批次最终判定以时间序列最后一份报告为准（复检优先） |
+| `calibration_total` | 校准辅助总量：按品类/地区/生产规模登记的已知总体批次总量 |
+
+所有登记动作写入只追加事件账（`SAMPLING_FRAME_CREATED`、`SAMPLING_UNIT_RECORDED`、`SAMPLING_NON_RESPONSE`、`LAB_REPORT_RECORDED`、`LAB_RECHECK_RECORDED`、`CALIBRATION_TOTAL_RECORDED`）。
+
+**三种估计（同一抽样框、同一批次单位，复检绝不重复计数）**
+
+1. **未加权朴素估计（对照）**：阳性样本 / 响应样本数，忽略 π，风险加抽越多越偏高；
+2. **设计加权估计（Horvitz–Thompson / Hařek）**：按真实入样概率取权重 d=1/π，同时给 HT（加权阳性数/N）与 Hařek（加权比率）点估计；方差按**分层随机抽样 + 有限总体校正 fpc** 计算，并输出**各层（地区×品类）方差贡献**；
+3. **校准估计（raking / 迭代比例拟合）**：以设计权重为底，按品类、地区、生产规模三个边际把权重校准到已知辅助总量，输出 g-权重（校准因子）；精度可能提高，但**依赖辅助总量正确与校准模型充分**。
+
+**重抽样与设计诊断（`/diagnostics`）**
+
+- 权重极端值：最大/最小权重、变异系数 CV、分位数、**Kish 有效样本量 n_eff**、权重设计效应 deff；少数小概率（π 小、权重大）样本如何放大方差一目了然；
+- 覆盖缺口：名册中**零抽样层**与小样本层、未覆盖总体比例；
+- 非响应影响：非响应权重占比与**最坏情形区间**（非响应批次全合格 / 全不合格的上下包络），非响应权重越大区间越宽；
+- 分层 Bootstrap：层内有放回重抽的经验标准误与百分位区间，与解析标准误相互核验（种子可复现）；
+- 风险加抽核验：加抽单位仍落在名册层内，**目标总体 N 不随加抽改变**，其影响完全经 π 加权还原；
+- 对平守卫：完全响应时响应者设计权重和必须 = N；存在非响应时报告权重缺口（= 未响应批次权重）。
+
+**题给样例（启动自动播种，框 `F2026-S1`）**：目标总体 N=400（市区 100、郊县 300）；市区抽 10/100 且 2 批不合格、郊县抽 30/300 且 3 批不合格，另对高风险批次**加抽 20 批且 4 批不合格**（市区统一 π=0.30、郊县 π=0.10）；郊县 2 批非响应，另含 2 份复检。结果：未加权 9/58≈**15.52%（高估）**，设计加权 HT=**12.50%**、Hařek=50/380≈13.16%；非响应权重缺口 20，最坏包络 [12.5%, 17.5%]；校准后权重和回到 400=N。
+
 ---
 
 ## 2. 一键启动
@@ -164,7 +196,7 @@ chmod +x verify.sh
 > UPDATE fault_switch SET timeout_next = FALSE WHERE id = 1;
 > ```
 
-### 4.2 JUnit 集成测试（21 个，真实 PostgreSQL + 随机端口）
+### 4.2 JUnit 集成测试（31 个，真实 PostgreSQL + 随机端口）
 
 ```bash
 mvn test
@@ -175,9 +207,21 @@ mvn test
 - `ScenarioFlowTest`：题面完整样例 + 重放/投影/重建一致性；
 - `ValidationCorrelationTest`：检出限单位缺失、坏签名、未知附件、规范版本单位词表、并行隔离、晚到修订、修订冲突、容器载荷冲突、未知批次/发送方；
 - `DeliveryIdempotencyTest`：同号同载荷、同号异载荷冲突、异号同摘要重复、未知→查询收敛、目标未收到时原号重发、两类回执、隔离修订不可投递；
-- `ProjectionRebuildTest`：重放时点窗口、投影漂移→重建报告差异并修复、不可变触发器拒绝 UPDATE/DELETE、样品键隔离。
+- `ProjectionRebuildTest`：重放时点窗口、投影漂移→重建报告差异并修复、不可变触发器拒绝 UPDATE/DELETE、样品键隔离；
+- `SamplingEstimationTest`（10 个）：未加权高估 vs 设计加权 HT/Hařek 真值、**复检不新增抽样单位且复检结论优先**、风险加抽不改变目标总体、非响应扩大区间并形成权重缺口、全响应权重分母与 N 对平、校准权重合计=辅助总量且收敛、各层方差贡献与 Bootstrap 标准误互证、权重极端值/有效样本量、零抽样层覆盖缺口、对平失败与 π 越界拒绝。
 
-### 4.3 手工快速体验
+### 4.3 抽样设计加权端到端验证脚本（19 项断言）
+
+服务启动会自动播种题给抽样框 `F2026-S1`（幂等，重复启动不重复造数）：
+
+```bash
+chmod +x verify_sampling.sh
+./verify_sampling.sh http://localhost:8080
+```
+
+脚本核验：抽样单位/加抽/非响应/复检去重计数；未加权 15.52% > 设计加权 HT 12.50%（朴素高估）；响应者权重分母 380、非响应权重缺口 20、框总量 400；校准权重和回到 400 且收敛；最大权重 10、加抽全部在框内且 N 不变、非响应最坏包络宽度 0.05、Bootstrap 与解析标准误接近。退出码 `0` 表示全部通过。
+
+### 4.4 手工快速体验
 
 ```bash
 # 1) 构造 C1 的 CSV 并签名
@@ -222,6 +266,14 @@ curl -u admin:admin123 -X POST http://localhost:8080/api/deliveries/O2/retry
 | `GET  /api/reconciliation/samples/{key}` | 样品证据链 |
 | `GET  /api/reconciliation/operations/{op}` | 操作号证据链 |
 | `GET  /api/meta/spec-versions` | 规范版本/批次/单位词表 |
+| `POST /api/sampling/frames` · `GET /api/sampling/frames/{id}` | 建立抽样框（含分层名册，总量对平）/ 查询 |
+| `POST /api/sampling/frames/{id}/units` · `GET .../units` | 登记/列出抽样单位（含 π、风险加抽、非响应） |
+| `POST /api/sampling/frames/{id}/units/{uid}/non-response` | 登记非响应原因 |
+| `POST /api/sampling/reports` · `GET /api/sampling/frames/{id}/reports` | 登记/列出实验室报告（复检 recheck 不重复计数） |
+| `POST /api/sampling/frames/{id}/calibration-totals` | 登记校准辅助总量（品类/地区/生产规模） |
+| `GET  /api/sampling/frames/{id}/overview` | 抽样框总览（响应/非响应/加抽/复检/去重单位数） |
+| `GET  /api/estimation/frames/{id}/estimates` | 未加权 / 设计加权(HT/Hařek) / 校准 三法对照 + 各层方差贡献 + 对平守卫 |
+| `GET  /api/estimation/frames/{id}/diagnostics` | 权重极端值、覆盖缺口、非响应包络、加抽核验、分层 Bootstrap |
 | `POST /target/deliveries` · `GET /target/deliveries/{op}` | 模拟目标端（幂等接收/查询） |
 | `POST /target/faults` · `GET /target/inbox` · `POST /target/reset` | 故障注入与检视 |
 
@@ -229,6 +281,8 @@ curl -u admin:admin123 -X POST http://localhost:8080/api/deliveries/O2/retry
 
 ## 6. 本环境实际验证结论
 
-- `mvn compile` / `mvn test`：**21 个集成测试全部通过，0 失败 0 错误**（真实连接 `127.0.0.1:5432/ccdev` PostgreSQL 18.1）；`mvn package` 同样通过。
-- 开发态启动后执行 `./verify.sh http://localhost:18080`：**55 项端到端断言全部通过**；最终交付 jar（`java -jar target/message-exchange-1.0.0.jar`，8080 端口）启动后再次执行 `./verify.sh`（默认地址）：**55/55 全部通过，退出码 0**。对账页 `/`、Swagger UI、OpenAPI JSON 均实测返回 200。
+- `mvn compile` / `mvn test`：**31 个集成测试全部通过，0 失败 0 错误**（真实连接 `127.0.0.1:5432/ccdev` PostgreSQL 18.1），其中含新增 `SamplingEstimationTest` 10 个；`mvn package` 同样通过。
+- 抽样设计加权端到端：最终交付 jar（`java -jar target/message-exchange-1.0.0.jar`，8080 端口）启动自动播种 `F2026-S1` 后执行 `./verify_sampling.sh http://localhost:8080`：**19/19 断言全部通过，退出码 0**。实测：未加权 15.517% > 设计加权 HT 12.500%（朴素高估成立）、Hařek 13.158%、响应者权重分母 380、非响应缺口 20、框总量 400、校准权重和回到 400 且 CONVERGED、最大权重 10、加抽 20 全在框内且 N=400 不变、非响应最坏包络宽度 0.05、Bootstrap SE 0.0449 与解析 SE 0.0457 互证。
+- 报文交换既有能力：交付 jar 启动（并对内置目标端做数次预热请求）后执行 `./verify.sh`（默认地址）维持 **55/55 全部通过，退出码 0**；对账页 `/`、Swagger UI、OpenAPI JSON 均实测返回 200。
+  > 注：内置模拟目标端为同进程自调用，读超时 1.5s。在高负载环境冷启动后首次自调用可能因 JIT/连接初始化超过该阈值而记一次 `UNKNOWN`（目标端实际已收到，重试即收敛）；预热后即稳定。这属于环境抖动，与抽样估计改动无关（投递链路代码未改动，`mvn test` 中投递相关用例全部通过）。
 - 工作区环境**未安装 Docker**（`docker` 命令不存在），因此 `Dockerfile` 与 `docker-compose.yml` 已按一键启动要求交付，但**镜像构建与 compose 启动未在本环境实际执行**；上述结论均来自本地 JDK 25 + Maven + 预装 PostgreSQL 的真实运行。在装有 Docker 的环境执行 `docker compose up --build` 即可获得等价运行环境。

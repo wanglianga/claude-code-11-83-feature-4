@@ -35,7 +35,8 @@ public abstract class ExchangeIntegrationTest {
   @org.junit.jupiter.api.BeforeEach
   void resetDatabase() {
     jdbc.execute("TRUNCATE inbound_envelope, business_event, report_revision_projection, "
-        + "report_head_projection, operation_ledger, receipt, target_inbox, target_receipt "
+        + "report_head_projection, operation_ledger, receipt, target_inbox, target_receipt, "
+        + "lab_report, sampling_unit, calibration_total, frame_stratum, sampling_frame "
         + "RESTART IDENTITY CASCADE");
     jdbc.update("UPDATE fault_switch SET timeout_next = FALSE WHERE id = 1");
   }

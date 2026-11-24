@@ -37,5 +37,17 @@ public enum EventType {
   /** 回执已登记 */
   RECEIPT_RECORDED,
   /** 投影已按事件账重建 */
-  PROJECTION_REBUILT
+  PROJECTION_REBUILT,
+  /** 抽样框已建立（保存目标总体与抽样设计依据） */
+  SAMPLING_FRAME_CREATED,
+  /** 抽样单位（抽样单/批次）已登记，含入样概率与风险加抽标记 */
+  SAMPLING_UNIT_RECORDED,
+  /** 抽样单位标记为非响应并记录原因 */
+  SAMPLING_NON_RESPONSE,
+  /** 实验室报告已登记并链接到抽样单 */
+  LAB_REPORT_RECORDED,
+  /** 同批次复检报告登记：挂在原抽样单位下，不作为新样本 */
+  LAB_RECHECK_RECORDED,
+  /** 校准辅助总量已登记 */
+  CALIBRATION_TOTAL_RECORDED
 }

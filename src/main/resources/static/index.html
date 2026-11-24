@@ -63,9 +63,10 @@
       <option value="operations">操作 operationNo（如 O2）</option>
     </select>
   </label>
-  <label>标识<input id="id" value="C1" placeholder="C1 / R7 / S17 / O2"></label>
+  <label>标识<input id="id" value="C1" placeholder="C1 / R7 / S17 / O2 / F2026-S1"></label>
   <button onclick="load()">查询证据链</button>
   <button style="background:#475569" onclick="rebuild()">重建投影并核验</button>
+  <button style="background:#0f766e" onclick="loadSampling()">抽样设计加权估计（框 F2026-S1）</button>
 </div>
 <div class="quick">
   快捷样例：
@@ -73,6 +74,7 @@
   <a onclick="q('reports','R7')">报告 R7 全链</a>
   <a onclick="q('samples','S17')">样品 S17</a>
   <a onclick="q('operations','O2')">操作 O2（超时→确认）</a>
+  <a onclick="loadSampling()">抽样估计 F2026-S1</a>
   <a href="/swagger-ui.html" target="_blank">Swagger UI ↗</a>
 </div>
 
@@ -204,6 +206,74 @@ async function rebuild() {
 }
 
 document.getElementById('id').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+
+// ---------- 抽样设计加权估计 ----------
+const pct = x => (x == null || Number.isNaN(x)) ? '—' : (x * 100).toFixed(3) + '%';
+const f4 = x => (x == null || Number.isNaN(x)) ? '—' : Number(x).toFixed(4);
+
+function estimateCard(title, e) {
+  if (!e || e.skipped) {
+    return '<div class="card"><h2>' + esc(title) + '</h2><p class="muted">' + esc(e && e.reason || '跳过') + '</p></div>';
+  }
+  const ci = e.confidenceInterval95 || [];
+  let html = '<div class="card"><h2>' + esc(title) + '（' + esc(e.method) + '）</h2><table>'
+    + '<tr><th>点估计（不合格率）</th><td><b>' + pct(e.pointEstimate) + '</b></td>'
+    + '<th>标准误 SE</th><td>' + f4(e.standardError) + '</td></tr>'
+    + '<tr><th>方差</th><td>' + f4(e.variance) + '</td><th>95% 置信区间</th><td>[' + pct(ci[0]) + ', ' + pct(ci[1]) + ']</td></tr>'
+    + '<tr><th>响应单位</th><td>' + esc(e.respondingUnits) + '</td><th>不合格单位</th><td>' + esc(e.nonconformingCount) + '</td></tr>'
+    + '<tr><th>权重分母</th><td>' + f4(e.weightDenominator) + '</td><th>目标总体 N</th><td>' + esc(e.targetPopulation) + '</td></tr></table>';
+  if (e.stratumContributions && e.stratumContributions.length) {
+    html += '<table style="margin-top:10px"><tr><th>层(地区||品类)</th><th>N_h</th><th>n_h</th><th>层率</th><th>fpc</th><th>方差贡献</th><th>占总方差</th></tr>'
+      + e.stratumContributions.map(c => '<tr><td>' + esc(c.stratum) + '</td><td>' + esc(c.populationNh) + '</td><td>' + esc(c.sampledNh)
+        + '</td><td>' + pct(c.stratumRate) + '</td><td>' + f4(c.fpc) + '</td><td>' + f4(c.varianceContribution)
+        + '</td><td>' + pct(c.shareOfTotalVariance) + '</td></tr>').join('') + '</table>';
+  }
+  return html + '</div>';
+}
+
+async function loadSampling() {
+  const frame = 'F2026-S1';
+  document.getElementById('out').innerHTML = '<div class="card">加载抽样估计…</div>';
+  try {
+    const [est, diag, ov] = await Promise.all([
+      api('/api/estimation/frames/' + frame + '/estimates?replications=2000'),
+      api('/api/estimation/frames/' + frame + '/diagnostics?replications=2000&seed=42'),
+      api('/api/sampling/frames/' + frame + '/overview')
+    ]);
+    let html = '<div class="card"><h2>抽样框 ' + esc(frame) + ' · 总览（复检不新增抽样单位）</h2><table>'
+      + '<tr><th>目标总体 N</th><td><b>' + esc(ov.frame.totalPopulation) + '</b></td><th>抽样单位(批次)</th><td>' + esc(ov.samplingUnitCount) + '</td></tr>'
+      + '<tr><th>响应 / 非响应</th><td>' + esc(ov.respondedCount) + ' / ' + esc(ov.nonResponseCount) + '</td>'
+      + '<th>风险加抽</th><td>' + esc(ov.oversampleCount) + '</td></tr>'
+      + '<tr><th>实验室报告 / 其中复检</th><td>' + esc(ov.labReportCount) + ' / ' + esc(ov.recheckReportCount) + '</td>'
+      + '<th>去重抽样单位</th><td><b>' + esc(ov.distinctSamplingUnits) + '</b></td></tr></table>'
+      + '<p class="muted">' + esc(ov.note) + '</p></div>';
+    html += estimateCard('① 未加权朴素估计（对照，风险加抽致高估）', est.naive);
+    html += estimateCard('② 设计加权估计（按真实入样概率 HT/Hařek + 分层 fpc 方差）', est.designWeighted);
+    html += estimateCard('③ 校准估计（品类/地区/生产规模 raking）', est.calibrated);
+
+    const g = est.reconciliationGuard || {};
+    const nr = diag.nonResponseImpact || {};
+    const wd = diag.weightDiagnostics || {};
+    const oc = diag.oversampleCheck || {};
+    const cg = diag.coverageGaps || {};
+    const bs = diag.stratifiedBootstrap || {};
+    html += '<div class="card"><h2>④ 对平守卫 · 非响应 · 重抽样诊断</h2><table>'
+      + '<tr><th>响应者权重和</th><td>' + f4(g.respondentDesignWeightSum) + '</td><th>框总量</th><td>' + esc(g.frameTotal) + '</td>'
+      + '<th>对平</th><td>' + (g.balanced ? '✅ 是' : '⚠️ 否（有非响应缺口）') + '</td></tr>'
+      + '<tr><th>非响应单位</th><td>' + esc(nr.nonResponseUnitCount) + '</td><th>非响应权重占比</th><td>' + pct(nr.nonResponseWeightShare) + '</td>'
+      + '<th>最坏包络宽度</th><td>' + pct(nr.worstCaseEnvelope && nr.worstCaseEnvelope.envelopeWidth) + '</td></tr>'
+      + '<tr><th>最大/最小权重</th><td>' + f4(wd.maxWeight) + ' / ' + f4(wd.minWeight) + '</td><th>Kish 有效样本量</th><td>' + f4(wd.kishEffectiveSampleSize) + '</td>'
+      + '<th>权重设计效应</th><td>' + f4(wd.designEffectFromWeights) + '</td></tr>'
+      + '<tr><th>风险加抽单位</th><td>' + esc(oc.oversampleUnitCount) + '</td><th>全部在框内</th><td>' + (oc.allOversamplesWithinFrame ? '✅' : '❌') + '</td>'
+      + '<th>N 不随加抽改变</th><td>' + esc(oc.targetPopulationUnchanged) + '</td></tr>'
+      + '<tr><th>零抽样层</th><td>' + esc((cg.zeroSampleStrata || []).length) + '</td><th>覆盖率</th><td>' + pct(cg.coverageRate) + '</td>'
+      + '<th>Bootstrap SE</th><td>' + f4(bs.bootstrapStandardError) + '（' + esc(bs.replications) + ' 次）</td></tr></table></div>';
+    html += '<div class="card"><h2>原始 JSON（估计）</h2><pre>' + esc(JSON.stringify(est, null, 2)) + '</pre></div>';
+    document.getElementById('out').innerHTML = html;
+  } catch (e) {
+    document.getElementById('out').innerHTML = '<div class="err">抽样估计加载失败：' + esc(e.message) + '<br><br>请确认服务已启动并自动播种框 F2026-S1，且账号密码正确。</div>';
+  }
+}
 </script>
 </body>
 </html>
