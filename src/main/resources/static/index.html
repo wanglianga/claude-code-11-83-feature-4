@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>报文交换 · 对账证据链</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; background: #f4f6f9; color: #1f2937; }
+  header { background: #0f3d6e; color: #fff; padding: 16px 28px; }
+  header h1 { margin: 0; font-size: 19px; }
+  header p { margin: 4px 0 0; font-size: 12.5px; opacity: .82; }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; padding: 16px 28px; background: #fff; border-bottom: 1px solid #e2e8f0; position: sticky; top: 0; z-index: 5; }
+  label { font-size: 12px; color: #64748b; display: flex; flex-direction: column; gap: 4px; }
+  input, select { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13.5px; min-width: 130px; }
+  button { padding: 8px 18px; border: 0; border-radius: 6px; background: #0f6cbd; color: #fff; font-size: 13.5px; cursor: pointer; }
+  button:hover { background: #0c5aa0; }
+  .quick { padding: 10px 28px 0; font-size: 12.5px; color: #64748b; }
+  .quick a { color: #0f6cbd; cursor: pointer; margin-right: 14px; text-decoration: none; }
+  .quick a:hover { text-decoration: underline; }
+  main { padding: 18px 28px 60px; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 15px; color: #0f3d6e; border-left: 4px solid #0f6cbd; padding-left: 9px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid #e5eaf1; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f8fafc; color: #475569; font-weight: 600; white-space: nowrap; }
+  .tag { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .ACCEPTED { background: #dcfce7; color: #166534; }
+  .SUPERSEDED { background: #e0e7ff; color: #3730a3; }
+  .BUSINESS_REJECTED, .PARSE_FAILED, .CONFLICT, .REVISION_CONFLICT { background: #fee2e2; color: #991b1b; }
+  .QUARANTINED, .UNKNOWN { background: #fef3c7; color: #92400e; }
+  .DUPLICATE, .DUPLICATE_ARRIVAL, .LATE_REVISION_IGNORED { background: #f1f5f9; color: #475569; }
+  .PENDING { background: #e0f2fe; color: #075985; }
+  .RECEIVED { background: #dbeafe; color: #1e40af; }
+  .DISPOSAL_CONFIRMED { background: #d1fae5; color: #065f46; }
+  .timeline { list-style: none; margin: 0; padding: 0; }
+  .timeline li { position: relative; padding: 6px 0 6px 26px; border-left: 2px solid #dbe3ee; margin-left: 8px; font-size: 12.8px; }
+  .timeline li::before { content: ""; position: absolute; left: -6px; top: 11px; width: 10px; height: 10px; border-radius: 50%; background: #0f6cbd; }
+  .seq { color: #94a3b8; font-variant-numeric: tabular-nums; margin-right: 8px; }
+  .etype { font-weight: 600; margin-right: 8px; }
+  .muted { color: #94a3b8; }
+  pre { background: #0b1f33; color: #cfe3ff; padding: 14px; border-radius: 8px; font-size: 12px; overflow: auto; max-height: 420px; }
+  .err { background: #fee2e2; color: #991b1b; padding: 12px 16px; border-radius: 8px; font-size: 13.5px; }
+  .chain { font-size: 13px; line-height: 1.9; }
+  .chain b { color: #0f3d6e; }
+  .arrow { color: #94a3b8; margin: 0 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>省食品安全平台 · 报文交换对账台</h1>
+  <p>容器 → 样品 → 报告修订 → 操作号 → 回执 的证据链；数据来自 /api/reconciliation 与 /api/projections 接口</p>
+</header>
+
+<div class="bar">
+  <label>认证用户名<input id="user" value="admin" autocomplete="username"></label>
+  <label>密码<input id="pass" type="password" value="admin123" autocomplete="current-password"></label>
+  <label>证据链类型
+    <select id="kind">
+      <option value="containers">容器 containerId（如 C1）</option>
+      <option value="reports">报告 reportNo（如 R7）</option>
+      <option value="samples">样品 sampleKey（如 S17）</option>
+      <option value="operations">操作 operationNo（如 O2）</option>
+    </select>
+  </label>
+  <label>标识<input id="id" value="C1" placeholder="C1 / R7 / S17 / O2"></label>
+  <button onclick="load()">查询证据链</button>
+  <button style="background:#475569" onclick="rebuild()">重建投影并核验</button>
+</div>
+<div class="quick">
+  快捷样例：
+  <a onclick="q('containers','C1')">容器 C1</a>
+  <a onclick="q('reports','R7')">报告 R7 全链</a>
+  <a onclick="q('samples','S17')">样品 S17</a>
+  <a onclick="q('operations','O2')">操作 O2（超时→确认）</a>
+  <a href="/swagger-ui.html" target="_blank">Swagger UI ↗</a>
+</div>
+
+<main id="out"><div class="card"><h2>使用说明</h2>
+  <div class="chain">先运行 <b>./verify.sh</b> 生成样例数据，然后点击上方快捷链接。<br>
+  状态标签含义：
+  <span class="tag ACCEPTED">已受理</span>
+  <span class="tag SUPERSEDED">被取代</span>
+  <span class="tag UNKNOWN">超时未知</span>
+  <span class="tag QUARANTINED">隔离</span>
+  <span class="tag BUSINESS_REJECTED">业务拒绝</span>
+  <span class="tag DUPLICATE_ARRIVAL">重复到达</span>
+  <span class="tag LATE_REVISION_IGNORED">晚到忽略</span>
+  </div>
+</div></main>
+
+<script>
+function q(kind, id) { document.getElementById('kind').value = kind; document.getElementById('id').value = id; load(); }
+
+function authHeader() {
+  const u = document.getElementById('user').value;
+  const p = document.getElementById('pass').value;
+  return 'Basic ' + btoa(u + ':' + p);
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({ headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' } }, opts));
+  const text = await res.text();
+  let body; try { body = JSON.parse(text); } catch { body = text; }
+  if (!res.ok) throw new Error((body && body.message) ? body.message : ('HTTP ' + res.status));
+  return body;
+}
+
+function tag(status) { return '<span class="tag ' + status + '">' + status + '</span>'; }
+function esc(s) { return s == null ? '<span class="muted">—</span>' : String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function eventsTable(events) {
+  if (!events || !events.length) return '<p class="muted">无事件</p>';
+  return '<ul class="timeline">' + events.map(e =>
+    '<li><span class="seq">#' + e.eventSeq + '</span><span class="etype">' + e.eventType + '</span>'
+    + (e.occurredAt ? '<span class="muted">' + e.occurredAt + '</span>' : '')
+    + (e.payload ? '<div class="muted" style="margin-top:2px">' + esc(typeof e.payload === 'string' ? e.payload : JSON.stringify(e.payload)) + '</div>' : '')
+    + '</li>').join('') + '</ul>';
+}
+
+function receiptsCell(op) {
+  if (!op.receipts || !op.receipts.length) return '<span class="muted">无回执</span>';
+  return op.receipts.map(r => tag(r.receiptType) + '<div class="muted" style="font-size:11.5px;margin-top:3px">' + esc(r.receiptId) + '</div>').join('<br>');
+}
+
+function operationsTable(ops) {
+  if (!ops || !ops.length) return '<span class="muted">无投递操作</span>';
+  return '<table><tr><th>操作号</th><th>状态</th><th>修订</th><th>类型</th><th>重复自</th><th>回执</th></tr>'
+    + ops.map(o => '<tr><td><b>' + esc(o.operationNo) + '</b></td><td>' + tag(o.status) + '</td><td>'
+      + esc(o.reportNo) + ' #' + esc(o.revisionNo) + '</td><td>' + esc(o.deliveryType) + '</td><td>'
+      + esc(o.duplicateOf) + '</td><td>' + receiptsCell(o) + '</td></tr>').join('') + '</table>';
+}
+
+function render(data, kind, id) {
+  let html = '';
+  if (kind === 'containers') {
+    const c = data.container || {};
+    html += '<div class="card"><h2>① 不可变入站信封（字节摘要/签名/规范版本/接收时间）</h2><table>'
+      + '<tr><th>容器号</th><td>' + esc(c.containerId) + '</td><th>批次</th><td>' + esc(c.batchId) + '</td></tr>'
+      + '<tr><th>发送方</th><td>' + esc(c.sender) + '</td><th>固定规范</th><td><b>' + esc(c.specVersion) + '</b></td></tr>'
+      + '<tr><th>SHA-256</th><td colspan="3" style="font-family:monospace;font-size:12px">' + esc(c.payloadSha256) + '</td></tr>'
+      + '<tr><th>签名有效</th><td>' + (c.signatureValid ? '✅ true' : '❌ false') + '</td><th>接收时间</th><td>' + esc(c.receivedAt) + '</td></tr></table></div>';
+    html += '<div class="card"><h2>② 容器内条目（样品 → 报告修订）</h2><table><tr><th>样品键</th><th>报告号</th><th>修订</th><th>当前状态</th><th>摘要</th></tr>'
+      + (data.entries || []).map(e => '<tr><td><b>' + esc(e.sampleKey) + '</b></td><td>' + esc(e.reportNo) + '</td><td>#' + esc(e.revisionNo) + '</td><td>' + (e.currentStatus ? tag(e.currentStatus) : '<span class="muted">未入链</span>') + '</td><td style="font-family:monospace;font-size:11px">' + esc((e.digest || '').slice(0, 16)) + '</td></tr>').join('')
+      + '</table></div>';
+    html += '<div class="card"><h2>③ 投递操作与回执</h2>' + operationsTable(data.operations) + '</div>';
+  }
+  if (kind === 'reports') {
+    html += '<div class="card"><h2>报告链 ' + esc(id) + (data.head ? ' · 当前链头 #' + data.head + ' ' + tag(data.headStatus) : '') + '</h2>'
+      + '<p class="muted">样品键：<b>' + esc(data.sampleKey) + '</b> ｜ 分区版本：' + esc(data.partitionVersion) + '</p>'
+      + '<table><tr><th>修订</th><th>状态</th><th>supersedes</th><th>规范</th><th>来源容器</th><th>晚到</th><th>原因</th></tr>'
+      + (data.revisions || []).slice().sort((a,b)=>a.revisionNo-b.revisionNo).map(r =>
+        '<tr><td><b>#' + r.revisionNo + '</b></td><td>' + tag(r.status) + '</td><td>' + esc(r.supersedes) + '</td><td>' + esc(r.specVersion) + '</td><td>' + esc(r.containerId) + '</td><td>' + (r.lateArrival ? '是' : '') + '</td><td>' + esc(r.reason) + '</td></tr>').join('')
+      + '</table></div>';
+    html += '<div class="card"><h2>投递操作与回执</h2>' + operationsTable(data.operations) + '</div>';
+  }
+  if (kind === 'samples') {
+    html += '<div class="card"><h2>样品 ' + esc(id) + ' → 报告（不按相似内容合并）</h2>'
+      + '<table><tr><th>报告号</th><th>链头</th><th>链头状态</th><th>分区版本</th></tr>'
+      + (data.heads || []).map(h => '<tr><td><b>' + esc(h.reportNo) + '</b></td><td>#' + esc(h.head) + '</td><td>' + tag(h.headStatus) + '</td><td>' + esc(h.partitionVersion) + '</td></tr>').join('')
+      + '</table></div>';
+  }
+  if (kind === 'operations') {
+    const o = data.operation || {};
+    html += '<div class="card"><h2>操作账</h2><table>'
+      + '<tr><th>操作号</th><td><b>' + esc(o.operationNo) + '</b></td><th>状态</th><td>' + tag(o.status) + '</td></tr>'
+      + '<tr><th>报告修订</th><td>' + esc(o.reportNo) + ' #' + esc(o.revisionNo) + '</td><th>载荷摘要</th><td style="font-family:monospace;font-size:11px">' + esc(o.payloadSha256) + '</td></tr>'
+      + '<tr><th>回执</th><td colspan="3">' + receiptsCell(o) + '</td></tr></table></div>';
+    if (data.reportRevision) {
+      const r = data.reportRevision;
+      html += '<div class="card"><h2>关联报告修订与容器</h2><div class="chain"><b>' + esc(r.sampleKey) + '</b> <span class="arrow">→</span> 报告 <b>' + esc(r.reportNo) + '</b> 修订 <b>#' + r.revisionNo + '</b> ' + tag(r.status) + ' <span class="arrow">→</span> 容器 <b>' + esc(r.containerId) + '</b>（规范 ' + esc(r.specVersion) + '）</div></div>';
+    }
+    if (data.container) {
+      html += '<div class="card"><h2>来源容器信封</h2><table><tr><th>SHA-256</th><td style="font-family:monospace;font-size:12px">' + esc(data.container.payloadSha256) + '</td></tr><tr><th>规范</th><td>' + esc(data.container.specVersion) + '</td></tr></table></div>';
+    }
+  }
+  if (data.events) html += '<div class="card"><h2>事件序列（不可变事件账）</h2>' + eventsTable(data.events) + '</div>';
+  html += '<div class="card"><h2>原始 JSON</h2><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></div>';
+  document.getElementById('out').innerHTML = html;
+}
+
+async function load() {
+  const kind = document.getElementById('kind').value;
+  const id = document.getElementById('id').value.trim();
+  if (!id) return;
+  document.getElementById('out').innerHTML = '<div class="card">加载中…</div>';
+  try {
+    const data = await api('/api/reconciliation/' + kind + '/' + encodeURIComponent(id));
+    render(data, kind, id);
+  } catch (e) {
+    document.getElementById('out').innerHTML = '<div class="err">查询失败：' + esc(e.message) + '<br><br>请确认已运行 ./verify.sh 生成数据，且账号密码正确。</div>';
+  }
+}
+
+async function rebuild() {
+  try {
+    const r = await api('/api/projections/rebuild', { method: 'POST' });
+    alert('投影重建完成\n分区数：' + r.rebuiltPartitions
+      + '\n投影差异：' + r.projectionDifferences.length
+      + '\n操作账不一致：' + r.operationMismatches.length
+      + '\n规范边界违例：' + r.specBoundaryViolations.length
+      + '\n整体一致：' + r.consistent);
+  } catch (e) { alert('重建失败：' + e.message); }
+}
+
+document.getElementById('id').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+</script>
+</body>
+</html>

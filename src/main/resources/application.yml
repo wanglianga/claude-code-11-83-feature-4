@@ -1,0 +1,53 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: food-safety-message-exchange
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://127.0.0.1:5432/ccdev}
+    username: ${DB_USER:ccdev}
+    password: ${DB_PASS:ccdev}
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+      continue-on-error: false
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
+  jackson:
+    time-zone: UTC
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+exchange:
+  target:
+    # 目标端地址；留空表示调用本服务内置的模拟目标端（/target/**）
+    base-url: ${TARGET_BASE_URL:}
+    connect-timeout-ms: 1000
+    read-timeout-ms: 1500
+  # 报文发送方身份 -> HMAC 共享密钥（演示环境配置，生产应使用密钥管理系统）
+  senders:
+    lab-alpha: lab-alpha-secret
+    lab-beta: lab-beta-secret
+    regulator-a: regulator-a-secret
+  # API 测试账号：用户名 -> 密码:角色
+  security:
+    users:
+      admin: admin123:ADMIN
+      regulator: regulator123:REGULATOR
+      lab: lab123:LAB
+
+logging:
+  level:
+    root: info
